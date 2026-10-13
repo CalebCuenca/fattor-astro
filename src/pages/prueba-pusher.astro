@@ -1,0 +1,130 @@
+<html lang="es">
+  <head><title>Prueba Pusher</title></head>
+  <body>
+    <h1>Prueba de Pusher con Facttor</h1>
+
+    <form id="prueba">
+      <p>
+        <label>URL de Facttor<br />
+          <input id="api" required size="55" placeholder="http://localhost:8000" />
+        </label>
+      </p>
+      <p>
+        <label>ID del POS<br />
+          <input id="pos" required placeholder="1" />
+        </label>
+      </p>
+      <p>
+        <label>Access token<br />
+          <input id="token" type="password" required size="55" />
+        </label>
+      </p>
+      <button>Conectar</button>
+    </form>
+
+    <pre id="resultado"></pre>
+
+    <script>
+      import Pusher from 'pusher-js';
+
+      const form = document.querySelector<HTMLFormElement>('#prueba')!;
+      const resultado = document.querySelector<HTMLElement>('#resultado')!;
+      let pusher: Pusher | undefined;
+
+      function mostrar(mensaje: string, datos?: unknown) {
+        resultado.textContent += mensaje + '\n';
+        if (datos !== undefined) {
+          resultado.textContent += JSON.stringify(datos, null, 2) + '\n';
+        }
+      }
+
+      form.addEventListener('submit', async (evento) => {
+        evento.preventDefault();
+        resultado.textContent = '';
+        pusher?.disconnect();
+
+        const api = document.querySelector<HTMLInputElement>('#api')!
+          .value.trim().replace(/\/$/, '');
+        const pos = document.querySelector<HTMLInputElement>('#pos')!.value.trim();
+        const token = document.querySelector<HTMLInputElement>('#token')!.value.trim();
+        const headers = { Authorization: `Bearer ${token}` };
+
+        try {
+          const respuesta = await fetch(
+            `${api}/api/mobile/v1/pos/${pos}/realtime/config`,
+            { headers },
+          );
+          const cuerpo = await respuesta.json();
+
+          if (!respuesta.ok || !cuerpo.ok) {
+            throw new Error(`Config HTTP ${respuesta.status}: ${JSON.stringify(cuerpo.error)}`);
+          }
+
+          const config = cuerpo.data;
+          mostrar('✅ Configuración obtenida', {
+            enabled: config.enabled,
+            channel: config.channel,
+            events: config.events,
+          });
+
+          if (!config.enabled) {
+            throw new Error('REALTIME_ENABLED está desactivado en Facttor');
+          }
+
+          pusher = new Pusher(config.key, {
+            cluster: config.cluster,
+            forceTLS: true,
+            channelAuthorization: {
+              endpoint: `${api}${config.authEndpoint}`,
+              transport: 'ajax',
+              headers,
+            },
+          });
+
+          pusher.connection.bind('connected', () =>
+            mostrar('✅ Conectado a Pusher'),
+          );
+          pusher.connection.bind('error', (error: unknown) =>
+            mostrar('❌ Error de conexión', error),
+          );
+
+          const canal = pusher.subscribe(config.channel);
+
+          canal.bind('pusher:subscription_error', (error: unknown) =>
+            mostrar('❌ Error al autorizar el canal', error),
+          );
+
+          canal.bind('pusher:subscription_succeeded', async () => {
+            mostrar('✅ Suscrito al canal privado');
+
+            const respuesta = await fetch(
+              `${api}/api/mobile/v1/pos/${pos}/realtime/snapshot`,
+              { headers },
+            );
+            const cuerpo = await respuesta.json();
+
+            if (!respuesta.ok || !cuerpo.ok) {
+              mostrar('❌ Error al obtener snapshot', cuerpo.error);
+              return;
+            }
+
+            mostrar('✅ Snapshot recibido', {
+              cursor: cuerpo.data.cursor,
+              mesas: cuerpo.data.tables.length,
+              ordenes: cuerpo.data.orders.length,
+              productos: cuerpo.data.products.length,
+            });
+          });
+
+          for (const nombre of Object.values(config.events) as string[]) {
+            canal.bind(nombre, (datos: unknown) =>
+              mostrar(`🔔 Evento recibido: ${nombre}`, datos),
+            );
+          }
+        } catch (error) {
+          mostrar('❌ Falló la prueba', String(error));
+        }
+      });
+    </script>
+  </body>
+</html>
